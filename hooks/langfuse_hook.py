@@ -40,6 +40,8 @@ DEBUG = _opt("CC_LANGFUSE_DEBUG").lower() == "true"
 SKILL_TAGS = (_opt("CC_LANGFUSE_SKILL_TAGS") or "true").lower() == "true"
 CAPTURE_SKILL_CONTENT = _opt("CC_LANGFUSE_CAPTURE_SKILL_CONTENT").lower() == "true"
 CAPTURE_IMAGES = (_opt("CC_LANGFUSE_CAPTURE_IMAGES") or "true").lower() == "true"
+REDACT_CONTENT = _opt("CC_LANGFUSE_REDACT_CONTENT").lower() == "true"
+REDACTED = "[content redacted]"
 OPERATOR_TAGS_VAR = "CC_LANGFUSE_TRACE_TAGS"
 try:
     MAX_CHARS = int(_opt("CC_LANGFUSE_MAX_CHARS") or "20000")
@@ -52,6 +54,14 @@ MAX_OPERATOR_TAG_CHARS = 200
 # Bound for unresolved task notifications kept in the state file between runs.
 MAX_PENDING_TASK_NOTIFICATIONS = 50
 INTERRUPTED_TURN_MARKER = "[Request interrupted by user]"
+
+def redact(value: Any) -> Any:
+    """Swap a content value for a fixed placeholder when CC_LANGFUSE_REDACT_CONTENT is on.
+
+    Usage, cost, and timing fields never pass through this - they're attached
+    as separate dict keys at each call site, not wrapped here.
+    """
+    return REDACTED if REDACT_CONTENT else value
 
 def parse_operator_tags(raw: str) -> Tuple[List[str], str]:
     """Parse caller tags from a JSON array or a comma-separated list.
@@ -745,7 +755,7 @@ def media_from_image_block(block: Dict[str, Any]) -> Optional[Any]:
     """Make a LangfuseMedia for a base64 image block. Return None when
     capture is off, media support is missing, or the block is malformed.
     The caller then keeps the text marker."""
-    if not CAPTURE_IMAGES or LangfuseMedia is None:
+    if not CAPTURE_IMAGES or REDACT_CONTENT or LangfuseMedia is None:
         return None
     source = block.get("source") if isinstance(block.get("source"), dict) else {}
     media_type = source.get("media_type")
@@ -825,7 +835,7 @@ def get_status_kwargs(status: Optional[Tuple[str, str]]) -> Dict[str, Any]:
     if status is None:
         return {}
     level, status_message = status
-    return {"level": level, "status_message": status_message}
+    return {"level": level, "status_message": redact(status_message)}
 
 def get_tool_use_blocks(content: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -2298,7 +2308,7 @@ def build_tool_metadata(
     if subagent:
         tool_metadata.update({
             "subagent_type": subagent.get("agent_type"),
-            "subagent_description": subagent.get("description"),
+            "subagent_description": redact(subagent.get("description")),
             "subagent_transcript_path": get_short_transcript_path_for_metadata(subagent.get("path")),
         })
     return tool_metadata
@@ -2359,7 +2369,7 @@ def emit_single_tool_observation(
     tool_result = get_tool_result_for_observation(tool_result_entry)
 
     tool_output: Any = tool_result.output
-    if CAPTURE_SKILL_CONTENT:
+    if CAPTURE_SKILL_CONTENT and not REDACT_CONTENT:
         injected = turn.injected_by_tool_id.get(tool_use_id) if tool_use_id else None
         if injected:
             injected_trunc, _ = truncate_text(injected)
@@ -2401,11 +2411,11 @@ def emit_single_tool_observation(
             as_type="tool",
             start_time=tool_use_timestamp,
             parent_otel_span=parent_otel_span,
-            input=tool_input,
+            input=redact(tool_input),
             metadata=tool_metadata,
             **get_status_kwargs(tool_result.status),
         )
-        tool_span.update(output=tool_output)
+        tool_span.update(output=redact(tool_output))
 
     subagent_end_timestamp = None
     if subagent:
@@ -2622,13 +2632,13 @@ def build_generation_kwargs(
 
     generation_kwargs: Dict[str, Any] = dict(
         model=get_model(assistant_message),
-        input=build_generation_input(
+        input=redact(build_generation_input(
             assistant_index,
             user_text,
             previous_tool_results,
             ready_async_tool_results,
-        ),
-        output=build_generation_output(assistant_text, tool_uses, thinking_parts),
+        )),
+        output=redact(build_generation_output(assistant_text, tool_uses, thinking_parts)),
         metadata={
             "assistant_index": assistant_index,
             "assistant_text": assistant_text_meta,
@@ -2928,9 +2938,11 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
     description = subagent.get("description")
     if span_name is None:
         span_name = f"Subagent: {description}" if isinstance(description, str) and description else "Subagent"
+        if REDACT_CONTENT and isinstance(description, str) and description:
+            span_name = f"Subagent: {REDACTED}"
     subagent_metadata: Dict[str, Any] = {
         "agent_type": subagent.get("agent_type"),
-        "description": description,
+        "description": redact(description),
         "transcript_path": get_short_transcript_path_for_metadata(path),
         "user_text": subagent_input_meta,
     }
@@ -2942,7 +2954,7 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
         as_type="span",
         start_time=subagent_start_timestamp,
         parent_otel_span=parent_otel_span,
-        input={"role": "user", "content": subagent_input_text},
+        input=redact({"role": "user", "content": subagent_input_text}),
         metadata=subagent_metadata,
         **get_status_kwargs(get_worst_turn_status(turns)),
     )
@@ -2968,7 +2980,7 @@ def emit_subagent_observations(langfuse: Langfuse, parent_otel_span: Any,
         if latest_turn_timestamp is not None:
             previous_start_timestamp = latest_turn_timestamp
 
-    subagent_span.update(output={"role": "assistant", "content": subagent_output_text})
+    subagent_span.update(output=redact({"role": "assistant", "content": subagent_output_text}))
     subagent_span.end(
         end_time=to_otel_nanoseconds(
             _get_latest_timestamp(latest_end_timestamp, subagent_start_timestamp)
@@ -3134,7 +3146,7 @@ def open_turn_root_span(langfuse: Langfuse, session_id: str, turn_num: int, turn
     _, user_text_meta = truncate_text(extract_text_from_content(get_content_from_row(turn.user_msg)))
     # The root keeps this turn's question only, so the trace list stays
     # scannable; the conversation history lives on the LLM call inputs.
-    root_input = {"role": "user", "content": build_user_history_content(turn.user_msg)}
+    root_input = redact({"role": "user", "content": build_user_history_content(turn.user_msg)})
     trace_metadata = build_trace_metadata(session_id, turn_num, turn, transcript_path, user_text_meta)
     if parent_context is not None:
         parent_trace_id, parent_span_id = parent_context
@@ -3262,7 +3274,7 @@ def emit_turn(langfuse: Langfuse, session_id: str, turn_num: int,
         if trace_span is not None:
             # The root exports exactly once: end time and output are the
             # values known now, and stay — exported fields are immutable.
-            trace_span.update(output=build_turn_output_payload(turn))
+            trace_span.update(output=redact(build_turn_output_payload(turn)))
             trace_span.end(
                 end_time=to_otel_nanoseconds(get_root_span_end_time(turn, obs_end_ts))
             )

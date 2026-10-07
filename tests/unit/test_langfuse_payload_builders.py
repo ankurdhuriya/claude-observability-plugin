@@ -99,6 +99,54 @@ def test_tool_result_payload_preserves_initial_and_final_async_outputs(hook_modu
     assert result.final_result_timestamp.isoformat() == "2026-01-01T00:00:05+00:00"
 
 
+def test_redact_content_swaps_generation_input_and_output_but_keeps_usage(hook_module, monkeypatch):
+    monkeypatch.setattr(hook_module, "REDACT_CONTENT", True)
+    row = {"type": "assistant", "message": {
+        "id": "msg-1", "role": "assistant", "model": "claude-test",
+        "content": [{"type": "text", "text": "secret answer"}],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }}
+
+    kwargs, _ = hook_module.build_generation_kwargs(0, row, "secret question", [], [])
+
+    assert kwargs["input"] == hook_module.REDACTED
+    assert kwargs["output"] == hook_module.REDACTED
+    assert "secret" not in json.dumps(kwargs)
+    assert kwargs["model"] == "claude-test"
+    assert kwargs["usage_details"] == {"input": 10, "output": 5}
+
+
+def test_redact_content_off_leaves_generation_input_and_output_untouched(hook_module):
+    row = {"type": "assistant", "message": {
+        "id": "msg-1", "role": "assistant", "model": "claude-test",
+        "content": [{"type": "text", "text": "visible answer"}],
+    }}
+
+    kwargs, _ = hook_module.build_generation_kwargs(0, row, "visible question", [], [])
+
+    assert kwargs["input"] == {"role": "user", "content": "visible question"}
+    assert kwargs["output"]["content"] == "visible answer"
+
+
+def test_redact_content_swaps_subagent_description_in_tool_metadata(hook_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(hook_module, "REDACT_CONTENT", True)
+
+    metadata = hook_module.build_tool_metadata(
+        "Agent",
+        "toolu_agent",
+        None,
+        hook_module.ToolResultForObservation(output_meta={"truncated": False}),
+        {
+            "agent_type": "general-purpose",
+            "description": "Summarize the quarterly earnings report",
+            "path": tmp_path / "agent-a123.jsonl",
+        },
+    )
+
+    assert metadata["subagent_description"] == hook_module.REDACTED
+    assert metadata["subagent_type"] == "general-purpose"
+
+
 def test_tool_metadata_uses_short_subagent_transcript_paths(hook_module, tmp_path):
     metadata = hook_module.build_tool_metadata(
         "Agent",
