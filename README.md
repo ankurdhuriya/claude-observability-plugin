@@ -8,16 +8,27 @@ tool calls, skills, subagents, and pasted or returned images.
 Langfuse also documents this integration on the
 [Claude Code integration page](https://langfuse.com/integrations/developer-tools/claude-code).
 
+This is a fork of [langfuse/Claude-Observability-Plugin](https://github.com/langfuse/Claude-Observability-Plugin)
+that adds `CC_LANGFUSE_REDACT_CONTENT`: an opt-in setting that sends cost,
+token usage, and latency to Langfuse while omitting prompt/response text,
+tool arguments, tool output, and free-text task descriptions. See
+[Langfuse Credentials](#langfuse-credentials) below for how to turn it on.
+
 ## Quick Start
 
-Add the marketplace and install the plugin:
+Add this fork's marketplace and install the plugin:
 
 ```bash
-claude plugin marketplace add langfuse/Claude-Observability-Plugin
+claude plugin marketplace add ankurdhuriya/claude-observability-plugin
 claude plugin install langfuse-observability@langfuse-observability
 ```
 
 Restart Claude Code after installing, so that it loads the hook.
+
+If you already have the upstream `langfuse/Claude-Observability-Plugin`
+marketplace added, remove it first (`claude plugin marketplace remove
+langfuse-observability`) — both marketplaces publish a plugin with the same
+name, and only one can be installed at a time.
 
 Tracing covers the `claude` CLI and the desktop app in **Code** mode. Claude
 Desktop **Chat** mode runs no Claude Code hooks and is not traced.
@@ -56,7 +67,8 @@ Get the keys from the API Keys page in your Langfuse project settings. The
 secret key is held in your OS keychain, not in a file.
 
 `/plugin configure` also lists the optional settings, such as the user ID,
-debug logging, and image capture, with their defaults.
+debug logging, image capture, and `CC_LANGFUSE_REDACT_CONTENT`, with their
+defaults.
 
 ## Updating
 
